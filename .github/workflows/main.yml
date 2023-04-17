@@ -1,0 +1,89 @@
+name:
+  CI
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 0 * * MON'
+jobs:
+  test:
+    name: Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: 'Dependency Review'
+        uses: actions/dependency-review-action@v3.0.3
+        continue-on-error: true
+        with:
+          head-ref: ${{ github.ref }}
+          base-ref: b682c92003e6d6d1138afa4451fb96b572652ee3
+          fail-on-severity: low
+          allow-licenses: MIT, BSD-2-Clause, BSD-3-Clause, Apache-1.1, Apache-2.0
+      - name: Build & Test
+        env:
+          PROJECT_NAME: ${{ github.event.repository.name }}
+          DOCKER_IMAGE: maven:3.8.7-openjdk-18
+        run: |
+          .github/docker/launcher.sh
+        shell: bash
+      - name: Consolidate Assets
+        run: |
+          cp target/dependency-check-report.html cve-check.html
+          cp -r target/site license-check
+      - name: Upload Jars
+        uses: actions/upload-artifact@v3
+        with:
+          name: jars
+          path: |
+            target/*.jar
+      - name: Upload Software Composition Analysis Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: sca-reports
+          path: |
+            cve-check.html
+            license-check
+  release:
+    name: Create Release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Download Jars
+        uses: actions/download-artifact@v3
+        with:
+          name: jars
+          path: jars-collection
+      - name: Download Software Composition Analysis Reports
+        uses: actions/download-artifact@v3
+        with:
+          name: sca-reports
+          path: reports-collection
+      - name: Consolidate Assets
+        run: |
+          sudo apt -y install zip
+          cd reports-collection
+          zip -r ../reports.zip cve-check.html license-check
+      - name: Changelog Pruning
+        run: |
+          sed -n `awk '/## \[[x0-9]/{c++} c==1{ print NR; exit }' CHANGELOG.md`',$p' CHANGELOG.md > .CHANGELOG.md.tmp
+          sed `awk '/## \[[x0-9]/{c++} c==2{ print NR; exit }' .CHANGELOG.md.tmp`',$d' .CHANGELOG.md.tmp > ${{ github.workspace }}-CHANGELOG.txt
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: ${{ github.workspace }}-CHANGELOG.txt
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          files: |
+            LICENSE
+            jars-collection/*
+            reports.zip
